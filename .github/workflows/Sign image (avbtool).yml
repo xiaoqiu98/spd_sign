@@ -1,10 +1,6 @@
-# This is a basic workflow to help you get started with Actions
-
 name: Sign image (avbtool)
 
-# Controls when the workflow will run
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
       BOOT_URL:
@@ -35,54 +31,173 @@ on:
         - '11'
         - '13'
         - 'vbmeta has no DHTB header, no need for padding'
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
+
 jobs:
-  # This workflow contains a single job called "build"
   avb-sign:
-    # The type of runner that the job will run on
     runs-on: ubuntu-latest
-
-    # Steps represent a sequence of tasks that will be executed as part of the job
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
-      - name: Prepare envionment
+      
+      - name: Check required directories
         run: |
-          git clone https://github.com/SebaUbuntu/AIK-Linux-mirror aik
-          sudo apt install python3 -y
-
-      - name: Get image
-        run: | 
-          wget "${{ github.event.inputs.BOOT_URL }}" -O ./aik/${{ github.event.inputs.TARGET }}.img
-          wget "${{ github.event.inputs.VBM_URL }}" -O ./avbtool/vbmeta.img
+          if [ ! -d "avbtool" ]; then
+            echo "Error: avbtool directory not found in repository"
+            exit 1
+          fi
+      
+      - name: Prepare environment
+        run: |
+          # 安装必要依赖
+          sudo apt update
+          sudo apt install -y python3 wget git
           
-      - name: Remove invalid content in your image
+          # 克隆AIK工具
+          git clone https://github.com/SebaUbuntu/AIK-Linux-mirror aik
+          
+          # 验证avbtool目录中的关键文件
+          if [ ! -f "avbtool/scriptgen" ] || [ ! -f "avbtool/avbtool" ]; then
+            echo "Error: Missing required files in avbtool directory"
+            exit 1
+          fi
+          
+          # 确保脚本可执行
+          chmod +x avbtool/scriptgen
+          chmod +x avbtool/avbtool
+      
+      - name: Download images
         run: |
-          ./unpackimg.sh ${{ github.event.inputs.TARGET }}.img
-          ./repackimg.sh
-          cp -v *-new.img ../avbtool/${{ github.event.inputs.TARGET }}.img
+          # 下载目标镜像
+          echo "Downloading target image from ${{ github.event.inputs.BOOT_URL }}"
+          wget -nv -O ./aik/${{ github.event.inputs.TARGET }}.img "${{ github.event.inputs.BOOT_URL }}" || {
+            echo "Error: Failed to download target image"
+            exit 1
+          }
+          
+          # 下载vbmeta镜像
+          echo "Downloading vbmeta from ${{ github.event.inputs.VBM_URL }}"
+          wget -nv -O ./avbtool/vbmeta.img "${{ github.event.inputs.VBM_URL }}" || {
+            echo "Error: Failed to download vbmeta image"
+            exit 1
+          }
+      
+      - name: Process image with AIK
+        run: |
+          # 检查AIK脚本是否存在
+          if [ ! -f "./unpackimg.sh" ] || [ ! -f "./repackimg.sh" ]; then
+            echo "Error: AIK scripts not found"
+            exit 1
+          fi
+          
+          # 确保脚本可执行
+          chmod +x ./unpackimg.sh
+          chmod +x ./repackimg.sh
+          
+          # 处理镜像
+          ./unpackimg.sh ${{ github.event.inputs.TARGET }}.img || {
+            echo "Error: Failed to unpack image"
+            exit 1
+          }
+          
+          ./repackimg.sh || {
+            echo "Error: Failed to repack image"
+            exit 1
+          }
+          
+          # 复制处理后的镜像
+          cp -v *-new.img ../avbtool/${{ github.event.inputs.TARGET }}.img || {
+            echo "Error: Failed to copy repacked image"
+            exit 1
+          }
         working-directory: aik
 
-      - name: Sign the image
+      - name: Sign images with avbtool
         run: |
-          echo "Generate vbmeta sign script..."
-          ./scriptgen vbmeta.img
-          chmod -v 755 sign_vbmeta.sh
-          echo "Sign vbmeta image..."
-          rm -v rsa4096_${{ github.event.inputs.TARGET }}_pub.bin
-          cp -v rsa4096_custom_pub.bin rsa4096_${{ github.event.inputs.TARGET }}_pub.bin
-          ./sign_vbmeta.sh
-          if [ ! '${{ github.event.inputs.VER }}' == 'vbmeta has no DHTB header, no need for padding' ];then python vbmeta_pad_${{ github.event.inputs.VER }}_$(cat sign_vbmeta.sh |grep padding |cut -d' ' -f 2).py; fi || if [ $? == 2 ]; then echo 'Failed to find padding script, did you choose correct Android version? stopping...'&&exit 127; else echo 'Error, stopping'&&exit 1; fi
-          echo "VBMeta signed!"
-          echo "Signing your ${{ github.event.inputs.TARGET }} image..."
-          python avbtool add_hash_footer --image ${{ github.event.inputs.TARGET }}.img --partition_name ${{ github.event.inputs.TARGET }} --partition_size ${{ github.event.inputs.SIZE }} --key rsa4096_vbmeta.pem --algorithm SHA256_RSA4096
-          echo "${{ github.event.inputs.TARGET }} image signed!"
+          # 生成签名脚本
+          echo "Generating vbmeta sign script..."
+          ./scriptgen vbmeta.img || {
+            echo "Error: Failed to generate sign script"
+            exit 1
+          }
+          
+          # 确保签名脚本可执行
+          chmod -v 755 sign_vbmeta.sh || {
+            echo "Error: Failed to make sign script executable"
+            exit 1
+          }
+          
+          # 准备签名密钥
+          echo "Preparing signing keys..."
+          if [ ! -f "rsa4096_custom_pub.bin" ]; then
+            echo "Error: rsa4096_custom_pub.bin not found"
+            exit 1
+          fi
+          rm -f rsa4096_${{ github.event.inputs.TARGET }}_pub.bin
+          cp -v rsa4096_custom_pub.bin rsa4096_${{ github.event.inputs.TARGET }}_pub.bin || {
+            echo "Error: Failed to copy public key"
+            exit 1
+          }
+          
+          # 签名vbmeta
+          echo "Signing vbmeta image..."
+          ./sign_vbmeta.sh || {
+            echo "Error: Failed to sign vbmeta"
+            exit 1
+          }
+          
+          # 处理DHTB头padding
+          if [ "${{ github.event.inputs.VER }}" != "vbmeta has no DHTB header, no need for padding" ]; then
+            padding_value=$(grep padding sign_vbmeta.sh | cut -d' ' -f 2)
+            padding_script="vbmeta_pad_${{ github.event.inputs.VER }}_${padding_value}.py"
+            
+            if [ ! -f "$padding_script" ]; then
+              echo "Error: Padding script $padding_script not found"
+              exit 127
+            fi
+            
+            echo "Applying DHTB header padding with $padding_script..."
+            python3 "$padding_script" || {
+              echo "Error: Failed to apply padding"
+              exit 1
+            }
+          fi
+          
+          # 签名目标镜像
+          echo "Signing ${{ github.event.inputs.TARGET }} image..."
+          if [ ! -f "${{ github.event.inputs.TARGET }}.img" ]; then
+            echo "Error: Target image ${{ github.event.inputs.TARGET }}.img not found"
+            exit 1
+          fi
+          
+          python3 avbtool add_hash_footer \
+            --image ${{ github.event.inputs.TARGET }}.img \
+            --partition_name ${{ github.event.inputs.TARGET }} \
+            --partition_size ${{ github.event.inputs.SIZE }} \
+            --key rsa4096_vbmeta.pem \
+            --algorithm SHA256_RSA4096 || {
+              echo "Error: Failed to sign target image"
+              exit 1
+            }
+          
+          echo "Signing completed successfully"
         working-directory: avbtool
 
-      - name: Upload to Artifact
+      - name: Verify output files
+        run: |
+          if [ ! -f "vbmeta-sign-custom.img" ]; then
+            echo "Error: Signed vbmeta image not generated"
+            exit 1
+          fi
+          
+          if [ ! -f "${{ github.event.inputs.TARGET }}.img" ]; then
+            echo "Error: Signed target image not found"
+            exit 1
+          fi
+        working-directory: avbtool
+
+      - name: Upload artifacts
         uses: actions/upload-artifact@v4
         with:
-          name: Signed image
+          name: Signed images
           path: |
             avbtool/vbmeta-sign-custom.img
             avbtool/${{ github.event.inputs.TARGET }}.img
