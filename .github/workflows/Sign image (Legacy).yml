@@ -1,47 +1,79 @@
-# This is a basic workflow to help you get started with Actions
-
 name: Sign image (Legacy)
 
-# Controls when the workflow will run
 on:
-  # Allows you to run this workflow manually from the Actions tab
   workflow_dispatch:
     inputs:
       IMAGE_URL:
         description: 'URL of the image you want to sign'
         required: true
         default: ''
-# A workflow run is made up of one or more jobs that can run sequentially or in parallel
-jobs:
-  # This workflow contains a single job called "build"
-  build:
-    # The type of runner that the job will run on
-    runs-on: ubuntu-latest
 
-    # Steps represent a sequence of tasks that will be executed as part of the job
+jobs:
+  build:
+    runs-on: ubuntu-latest
     steps:
-      # Checks-out your repository under $GITHUB_WORKSPACE, so your job can access it
       - uses: actions/checkout@v4
+      
+      - name: Check legacy directory exists
+        run: |
+          if [ ! -d "legacy" ]; then
+            echo "Error: legacy directory not found"
+            exit 1
+          fi
+      
       - name: Get AIK
         run: git clone https://github.com/SebaUbuntu/AIK-Linux-mirror aik
- 
+      
       - name: Get image
         run: wget ${{ github.event.inputs.IMAGE_URL }} -O ./aik/1.img
-
-      - name: Remove invalid content in your image
+      
+      - name: Make scripts executable
         run: |
+          # 确保脚本有执行权限
+          chmod +x ../legacy/header.sh
+          chmod +x ./unpackimg.sh
+          chmod +x ./repackimg.sh
+        working-directory: aik
+      
+      - name: Remove invalid content in image
+        run: |
+          # 检查脚本是否存在
+          if [ ! -f "../legacy/header.sh" ]; then
+            echo "Error: ../legacy/header.sh not found"
+            exit 1
+          fi
           ../legacy/header.sh 1.img
           ./unpackimg.sh 1.img
           ./repackimg.sh
           cp -v image-new.img ../legacy/out.img
         working-directory: aik
-        
+      
+      - name: Prepare signing tools
+        run: |
+          # 确保签名工具存在并可执行
+          chmod +x ./imgheaderinsert
+          chmod +x ./sprd_sign
+          # 检查配置文件
+          if [ ! -f "config" ]; then
+            echo "Error: config file not found in legacy directory"
+            exit 1
+          fi
+        working-directory: legacy
+      
       - name: Sign the image
         run: |
           ./imgheaderinsert out.img 0
           ./sprd_sign out-sign.img config
         working-directory: legacy
-
+      
+      - name: Verify output
+        run: |
+          if [ ! -f "out-sign.img" ]; then
+            echo "Error: Signed image not generated"
+            exit 1
+          fi
+        working-directory: legacy
+      
       - name: Upload to Artifact
         uses: actions/upload-artifact@v4
         with:
